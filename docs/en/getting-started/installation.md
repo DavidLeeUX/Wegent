@@ -111,6 +111,12 @@ ATTACHMENT_STORAGE_BACKEND=mysql
 # Executor Manager Configuration
 EXECUTOR_IMAGE=ghcr.io/wecode-ai/wegent-executor:latest
 EXECUTOR_WORKSPACE=/path/to/workspace
+
+# Document Conversion Configuration (Optional)
+# Enable to convert PDF, DOCX, PPTX, XLSX to Markdown before indexing
+KNOWLEDGE_CONVERSION_ENABLED=false
+KNOWLEDGE_CONVERSION_FILE_TYPES=pdf,docx,pptx,xlsx
+MINERU_API_BASE_URL=http://mineru-service:8367
 ```
 
 ### Step 3: Start Services

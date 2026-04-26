@@ -330,6 +330,47 @@ class Settings(BaseSettings):
     KNOWLEDGE_INDEX_STALE_QUEUED_SECONDS: int = 600
     KNOWLEDGE_INDEX_STALE_INDEXING_SECONDS: int = 2700
 
+    # Knowledge document conversion configuration
+    # Master switch for document conversion feature
+    # When False, conversion is disabled and files are indexed directly (original behavior)
+    # When True, files matching KNOWLEDGE_CONVERSION_FILE_TYPES will be converted to markdown
+    KNOWLEDGE_CONVERSION_ENABLED: bool = False
+
+    # Comma-separated list of file extensions that need conversion to markdown
+    # before indexing. Example: "pdf,pptx,docx"
+    # Only used when KNOWLEDGE_CONVERSION_ENABLED is True.
+    KNOWLEDGE_CONVERSION_FILE_TYPES: str = ""
+
+    # Celery queue name for document conversion tasks
+    KNOWLEDGE_CONVERSION_QUEUE: str = "knowledge_conversion"
+
+    # Stale detection timeout for CONVERTING status (seconds, default 30 min)
+    KNOWLEDGE_INDEX_STALE_CONVERTING_SECONDS: int = 1800
+
+    # Conversion task distributed lock configuration
+    KNOWLEDGE_CONVERSION_LOCK_TIMEOUT_SECONDS: int = 300
+    KNOWLEDGE_CONVERSION_LOCK_EXTEND_INTERVAL_SECONDS: int = 60
+    KNOWLEDGE_CONVERSION_LOCK_MAX_RETRIES: int = 2
+    KNOWLEDGE_CONVERSION_LOCK_RETRY_DELAY_SECONDS: int = 30
+
+    # MinerU API configuration for PDF to Markdown conversion
+    # Base URL for MinerU API service (e.g., "http://10.2.40.157:8367")
+    MINERU_API_BASE_URL: str = ""
+    # MinerU backend type: "pipeline" or other supported backends
+    MINERU_BACKEND: str = "pipeline"
+    # MinerU parse method: "ocr", "auto", etc.
+    MINERU_PARSE_METHOD: str = "ocr"
+    # Language list for OCR (comma-separated, e.g., "ch,en")
+    MINERU_LANG_LIST: str = "ch"
+    # Enable formula recognition
+    MINERU_FORMULA_ENABLE: bool = True
+    # Enable table recognition
+    MINERU_TABLE_ENABLE: bool = True
+    # Polling interval for task status checks (seconds)
+    MINERU_POLL_INTERVAL_SECONDS: int = 3
+    # Maximum time to wait for MinerU task completion (seconds, default 10 min)
+    MINERU_MAX_WAIT_SECONDS: int = 600
+
     # Circuit breaker configuration
     CIRCUIT_BREAKER_FAIL_MAX: int = 5  # Open circuit after 5 consecutive failures
     CIRCUIT_BREAKER_RESET_TIMEOUT: int = 60  # Try to recover after 60 seconds
@@ -594,6 +635,26 @@ class Settings(BaseSettings):
     # OpenTelemetry configuration is centralized in shared/telemetry/config.py
     # Use: from shared.telemetry.config import get_otel_config
     # All OTEL_* environment variables are read from there
+
+    def needs_conversion(self, file_extension: str) -> bool:
+        """Check if a file extension requires conversion before indexing.
+
+        Conversion only occurs when:
+        1. KNOWLEDGE_CONVERSION_ENABLED is True (master switch)
+        2. KNOWLEDGE_CONVERSION_FILE_TYPES is not empty
+        3. The file extension is in the conversion list
+        """
+        if not self.KNOWLEDGE_CONVERSION_ENABLED:
+            return False
+        if not self.KNOWLEDGE_CONVERSION_FILE_TYPES:
+            return False
+        ext = file_extension.lstrip(".").lower()
+        types = [
+            t.strip().lower()
+            for t in self.KNOWLEDGE_CONVERSION_FILE_TYPES.split(",")
+            if t.strip()
+        ]
+        return ext in types
 
     def get_rag_runtime_mode(self, operation: str) -> str:
         """Resolve the effective RAG runtime mode for an operation."""

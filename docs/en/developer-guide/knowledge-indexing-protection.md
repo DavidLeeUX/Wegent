@@ -29,19 +29,21 @@ The protection has three layers.
 
 The `knowledge_documents` table now stores:
 
-- `index_status`: `not_indexed | queued | indexing | success | failed`
+- `index_status`: `not_indexed | queued | converting | indexing | success | failed`
 - `index_generation`
 
 `index_generation` is the key field. Every valid new indexing attempt gets a new generation. Any older task becomes stale automatically.
 
 `not_indexed` is the explicit initial state. It separates "never indexed yet" from a real execution failure instead of overloading both into `failed`.
 
+`converting` is an intermediate state for documents that require format conversion (e.g., PDF, DOCX, PPTX, XLSX) before indexing. The conversion happens on dedicated workers via the `knowledge_conversion` queue. Once conversion completes, the document transitions back to `queued` and proceeds to `indexing`.
+
 ### 2. Business dedupe before enqueue
 
 Before sending a Celery task, the orchestrator updates database state first:
 
-- if the document is already `queued / indexing`, duplicate enqueue is skipped
-- if `queued / indexing` has been stuck too long, a new request can take over with a new generation
+- if the document is already `queued / converting / indexing`, duplicate enqueue is skipped
+- if `queued / converting / indexing` has been stuck too long, a new request can take over with a new generation
 - if the document is already `success`, normal retry requests are skipped
 - only flows that explicitly need a new attempt create a new generation
 
@@ -50,11 +52,12 @@ Current policy:
 - new document: create a new generation
 - retry for failed document: create a new generation
 - content update / web refresh: replace the active generation so old tasks become stale
-- long-lived `queued / indexing`: allow takeover after stale detection based on `updated_at`
+- long-lived `queued / converting / indexing`: allow takeover after stale detection based on `updated_at`
 
 Current default thresholds:
 
 - `queued` older than 10 minutes can be replaced by a new generation
+- `converting` older than 30 minutes can be replaced by a new generation
 - `indexing` older than 45 minutes can be replaced by a new generation
 
 ### 3. Final guard before worker execution
@@ -67,7 +70,7 @@ Before calling the embedding model, the Celery worker:
 The task only executes when:
 
 - the task generation matches the current database generation
-- the current status is still `queued` or `indexing`
+- the current status is still `queued`, `converting`, or `indexing`
 
 Otherwise it returns `skipped` and does not call the embedding model again.
 

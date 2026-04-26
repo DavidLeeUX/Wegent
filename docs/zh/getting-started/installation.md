@@ -111,6 +111,12 @@ ATTACHMENT_STORAGE_BACKEND=mysql
 # Executor Manager 配置
 EXECUTOR_IMAGE=ghcr.io/wecode-ai/wegent-executor:latest
 EXECUTOR_WORKSPACE=/path/to/workspace
+
+# 文档转换配置（可选）
+# 启用后将 PDF、DOCX、PPTX、XLSX 转换为 Markdown 后再进行索引
+KNOWLEDGE_CONVERSION_ENABLED=false
+KNOWLEDGE_CONVERSION_FILE_TYPES=pdf,docx,pptx,xlsx
+MINERU_API_BASE_URL=http://mineru-service:8367
 ```
 
 ### 步骤 3: 启动服务

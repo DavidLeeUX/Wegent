@@ -25,6 +25,7 @@ from typing import Any, Dict, List, Literal, Optional
 
 from sqlalchemy.orm import Session
 
+from app.core.config import settings
 from app.models.kind import Kind
 from app.models.knowledge import KnowledgeDocument
 from app.models.task import TaskResource
@@ -1632,20 +1633,63 @@ class KnowledgeOrchestrator:
             raise RuntimeError(message)
 
         try:
-            async_result = index_document_task.delay(
-                knowledge_base_id=str(knowledge_base.id),
-                attachment_id=document.attachment_id,
-                retriever_name=retriever_name,
-                retriever_namespace=retriever_namespace,
-                embedding_model_name=embedding_model_name,
-                embedding_model_namespace=embedding_model_namespace,
-                user_id=index_owner_user_id,
-                user_name=user.user_name,
-                document_id=document.id,
-                index_generation=generation,
-                splitter_config_dict=splitter_config,
-                trigger_summary=trigger_summary,
-            )
+            if settings.needs_conversion(document.file_extension or ""):
+                # File type requires conversion before indexing
+                # Retrieve original filename from attachment record
+                from app.models.subtask_context import ContextType, SubtaskContext
+                from app.tasks.conversion_tasks import convert_document_task
+
+                attachment = (
+                    db.query(SubtaskContext)
+                    .filter(
+                        SubtaskContext.id == document.attachment_id,
+                        SubtaskContext.context_type == ContextType.ATTACHMENT.value,
+                    )
+                    .first()
+                )
+                original_filename = (
+                    attachment.original_filename if attachment else document.name
+                )
+
+                async_result = convert_document_task.delay(
+                    document_id=document.id,
+                    attachment_id=document.attachment_id,
+                    knowledge_base_id=str(knowledge_base.id),
+                    index_generation=generation,
+                    user_id=index_owner_user_id,
+                    user_name=user.user_name,
+                    file_extension=document.file_extension or "",
+                    original_filename=original_filename,
+                    retriever_name=retriever_name,
+                    retriever_namespace=retriever_namespace,
+                    embedding_model_name=embedding_model_name,
+                    embedding_model_namespace=embedding_model_namespace,
+                    splitter_config_dict=splitter_config,
+                    trigger_summary=trigger_summary,
+                )
+
+                logger.info(
+                    f"[Orchestrator] Conversion task enqueued: "
+                    f"document_id={document.id}, file_ext={document.file_extension}, "
+                    f"index_generation={generation}, "
+                    f"celery_task_id={async_result.id}"
+                )
+            else:
+                # Direct indexing (no conversion needed)
+                async_result = index_document_task.delay(
+                    knowledge_base_id=str(knowledge_base.id),
+                    attachment_id=document.attachment_id,
+                    retriever_name=retriever_name,
+                    retriever_namespace=retriever_namespace,
+                    embedding_model_name=embedding_model_name,
+                    embedding_model_namespace=embedding_model_namespace,
+                    user_id=index_owner_user_id,
+                    user_name=user.user_name,
+                    document_id=document.id,
+                    index_generation=generation,
+                    splitter_config_dict=splitter_config,
+                    trigger_summary=trigger_summary,
+                )
         except Exception as exc:
             mark_document_index_enqueue_failed(
                 db=db,
@@ -1653,7 +1697,7 @@ class KnowledgeOrchestrator:
                 generation=generation,
             )
             logger.error(
-                f"[Orchestrator] Failed to enqueue RAG indexing task for document {document.id}: {exc}",
+                f"[Orchestrator] Failed to enqueue task for document {document.id}: {exc}",
                 exc_info=True,
             )
             raise

@@ -31,19 +31,21 @@ sidebar_position: 12
 
 在 `knowledge_documents` 表新增字段：
 
-- `index_status`: `not_indexed | queued | indexing | success | failed`
+- `index_status`: `not_indexed | queued | converting | indexing | success | failed`
 - `index_generation`: 当前索引世代
 
 其中 `index_generation` 是这次改造的核心。每次“有效的新一轮索引”都会生成新的 generation，旧任务只要 generation 对不上，就必须退出。
 
-其中 `not_indexed` 是显式初始态，表示文档尚未建立过索引，不再把“未开始”和“执行失败”混成同一个 `failed` 状态。
+其中 `not_indexed` 是显式初始态，表示文档尚未建立过索引，不再把”未开始”和”执行失败”混成同一个 `failed` 状态。
+
+`converting` 是需要格式转换的文档的中间状态（如 PDF、DOCX、PPTX、XLSX 等）。转换任务在专门的 `knowledge_conversion` 队列上执行，完成后文档会回到 `queued` 状态，再继续进入 `indexing` 状态。
 
 ### 2. enqueue 前的业务去重
 
 在真正调用 Celery 之前，orchestrator 会先更新数据库状态：
 
-- 如果文档已经处于 `queued / indexing`，默认不再重复入队
-- 如果 `queued / indexing` 已经卡住太久，会允许新请求接管并生成新的 generation
+- 如果文档已经处于 `queued / converting / indexing`，默认不再重复入队
+- 如果 `queued / converting / indexing` 已经卡住太久，会允许新请求接管并生成新的 generation
 - 如果文档已经 `success`，普通重试请求直接跳过
 - 只有明确需要覆盖当前世代的场景，才会生成新的 generation
 
@@ -52,11 +54,12 @@ sidebar_position: 12
 - 新建文档：正常生成新 generation
 - 失败文档重试：生成新 generation
 - 文档内容被更新 / Web 文档刷新：允许覆盖当前世代，旧任务会自动变 stale
-- 长时间停留在 `queued / indexing`：按 `updated_at` 判定为 stale 后允许接管
+- 长时间停留在 `queued / converting / indexing`：按 `updated_at` 判定为 stale 后允许接管
 
 当前默认阈值：
 
 - `queued` 超过 10 分钟，允许新的 generation 接管
+- `converting` 超过 30 分钟，允许新的 generation 接管
 - `indexing` 超过 45 分钟，允许新的 generation 接管
 
 ### 3. worker 执行前的最终判定
@@ -69,7 +72,7 @@ Celery worker 在真正调用 embedding 之前，会先做两件事：
 只有满足下面条件才继续执行：
 
 - 当前任务的 generation 等于数据库里的当前 generation
-- 当前状态仍然是 `queued` 或 `indexing`
+- 当前状态仍然是 `queued`、`converting` 或 `indexing`
 
 否则直接返回 `skipped`，不会再次调用 embedding 模型。
 
