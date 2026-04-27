@@ -348,7 +348,8 @@ class Settings(BaseSettings):
     KNOWLEDGE_INDEX_STALE_CONVERTING_SECONDS: int = 1800
 
     # Conversion task distributed lock configuration
-    KNOWLEDGE_CONVERSION_LOCK_TIMEOUT_SECONDS: int = 300
+    # Lock timeout should be longer than task soft_time_limit to prevent premature expiration
+    KNOWLEDGE_CONVERSION_LOCK_TIMEOUT_SECONDS: int = 2000
     KNOWLEDGE_CONVERSION_LOCK_EXTEND_INTERVAL_SECONDS: int = 60
     KNOWLEDGE_CONVERSION_LOCK_MAX_RETRIES: int = 2
     KNOWLEDGE_CONVERSION_LOCK_RETRY_DELAY_SECONDS: int = 30
@@ -370,6 +371,16 @@ class Settings(BaseSettings):
     MINERU_POLL_INTERVAL_SECONDS: int = 3
     # Maximum time to wait for MinerU task completion (seconds, default 10 min)
     MINERU_MAX_WAIT_SECONDS: int = 600
+
+    # Document conversion S3 storage configuration for extracted images
+    # When enabled, images extracted by MinerU will be uploaded to S3
+    # and markdown image references will be updated to S3 URLs
+    WORKER_CONVERSION_S3_ENABLED: bool = False
+    WORKER_CONVERSION_S3_ENDPOINT: str = ""
+    WORKER_CONVERSION_S3_ACCESS_KEY: str = ""
+    WORKER_CONVERSION_S3_SECRET_KEY: str = ""
+    WORKER_CONVERSION_S3_BUCKET_NAME: str = ""
+    WORKER_CONVERSION_S3_REGION_NAME: str = "us-east-1"
 
     # Circuit breaker configuration
     CIRCUIT_BREAKER_FAIL_MAX: int = 5  # Open circuit after 5 consecutive failures

@@ -1655,6 +1655,7 @@ class KnowledgeOrchestrator:
                     document_id=document.id,
                     attachment_id=document.attachment_id,
                     knowledge_base_id=str(knowledge_base.id),
+                    knowledge_base_name=knowledge_base.name,
                     index_generation=generation,
                     user_id=index_owner_user_id,
                     user_name=user.user_name,

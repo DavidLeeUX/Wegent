@@ -117,6 +117,15 @@ EXECUTOR_WORKSPACE=/path/to/workspace
 KNOWLEDGE_CONVERSION_ENABLED=false
 KNOWLEDGE_CONVERSION_FILE_TYPES=pdf,docx,pptx,xlsx
 MINERU_API_BASE_URL=http://mineru-service:8367
+
+# Document Conversion S3 Storage Configuration (Optional)
+# Enable to upload extracted images to S3 and replace markdown image references
+WORKER_CONVERSION_S3_ENABLED=false
+WORKER_CONVERSION_S3_ENDPOINT=http://minio:9000
+WORKER_CONVERSION_S3_ACCESS_KEY=your_access_key
+WORKER_CONVERSION_S3_SECRET_KEY=your_secret_key
+WORKER_CONVERSION_S3_BUCKET_NAME=img
+WORKER_CONVERSION_S3_REGION_NAME=us-east-1
 ```
 
 ### Step 3: Start Services

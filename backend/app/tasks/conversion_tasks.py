@@ -22,8 +22,11 @@ knowledge_conversion queue.
 import asyncio
 import io
 import logging
+import os
+import re
 import zipfile
-from typing import Optional
+from typing import Optional, Tuple
+from urllib.parse import quote
 
 import httpx
 
@@ -33,6 +36,33 @@ from app.core.distributed_lock import distributed_lock
 from app.db.session import SessionLocal
 
 logger = logging.getLogger(__name__)
+
+# Lazy import boto3 for S3 operations
+_s3_client = None
+
+
+def _get_s3_client():
+    """Get or create S3 client for image upload."""
+    global _s3_client
+    if _s3_client is None and settings.WORKER_CONVERSION_S3_ENABLED:
+        try:
+            import boto3
+
+            _s3_client = boto3.client(
+                "s3",
+                endpoint_url=settings.WORKER_CONVERSION_S3_ENDPOINT,
+                aws_access_key_id=settings.WORKER_CONVERSION_S3_ACCESS_KEY,
+                aws_secret_access_key=settings.WORKER_CONVERSION_S3_SECRET_KEY,
+                region_name=settings.WORKER_CONVERSION_S3_REGION_NAME,
+            )
+            logger.info(
+                f"[S3] S3 client initialized for endpoint: {settings.WORKER_CONVERSION_S3_ENDPOINT}"
+            )
+        except Exception as e:
+            logger.error(f"[S3] Failed to initialize S3 client: {e}")
+            raise
+    return _s3_client
+
 
 CONVERSION_LOCK_TIMEOUT = settings.KNOWLEDGE_CONVERSION_LOCK_TIMEOUT_SECONDS
 CONVERSION_LOCK_EXTEND = settings.KNOWLEDGE_CONVERSION_LOCK_EXTEND_INTERVAL_SECONDS
@@ -50,7 +80,9 @@ _MINERU_MIME_TYPES = {
 }
 
 
-def _convert_to_markdown(binary_data: bytes, file_extension: str) -> bytes:
+def _convert_to_markdown(
+    binary_data: bytes, file_extension: str, base_dir_name: Optional[str] = None
+) -> Tuple[bytes, list]:
     """
     Convert document binary to Markdown format via MinerU API.
 
@@ -59,9 +91,10 @@ def _convert_to_markdown(binary_data: bytes, file_extension: str) -> bytes:
     Args:
         binary_data: Original file binary content
         file_extension: Original file extension (e.g., ".pdf", ".docx")
+        base_dir_name: Base directory name for S3 upload (derived from original filename)
 
     Returns:
-        Markdown content as UTF-8 encoded bytes
+        Tuple of (markdown content as bytes, uploaded_image_urls list)
 
     Raises:
         RuntimeError: If the file type is unsupported or MinerU fails
@@ -74,16 +107,22 @@ def _convert_to_markdown(binary_data: bytes, file_extension: str) -> bytes:
             f"Supported types: {', '.join(_MINERU_MIME_TYPES)}"
         )
 
-    return asyncio.run(_convert_with_mineru_async(binary_data, ext))
+    return asyncio.run(_convert_with_mineru_async(binary_data, ext, base_dir_name))
 
 
-async def _convert_with_mineru_async(binary_data: bytes, file_extension: str) -> bytes:
+async def _convert_with_mineru_async(
+    binary_data: bytes, file_extension: str, base_dir_name: Optional[str] = None
+) -> Tuple[bytes, list]:
     """
     Async implementation of document to Markdown conversion using MinerU API.
 
     Args:
         binary_data: File binary content
         file_extension: File extension without dot (e.g., "pdf", "docx", "pptx")
+        base_dir_name: Base directory name for S3 upload (derived from original filename)
+
+    Returns:
+        Tuple of (markdown content as bytes, uploaded_image_urls list)
     """
     if not settings.MINERU_API_BASE_URL:
         raise RuntimeError("MINERU_API_BASE_URL is not configured")
@@ -175,23 +214,70 @@ async def _convert_with_mineru_async(binary_data: bytes, file_extension: str) ->
             if "application/json" in content_type:
                 raise RuntimeError("MinerU returned JSON instead of ZIP")
 
-            # Extract markdown from ZIP
-            return _extract_markdown_from_zip(result_resp.content)
+            # Extract markdown from ZIP (with optional S3 image upload)
+            markdown_bytes, uploaded_images = _extract_markdown_from_zip(
+                result_resp.content, base_dir_name
+            )
+            return markdown_bytes, uploaded_images
 
         except Exception as e:
             raise RuntimeError(f"Failed to download MinerU result: {e}")
 
 
-def _extract_markdown_from_zip(zip_content: bytes) -> bytes:
+def _upload_image_to_s3(
+    image_data: bytes, object_name: str, content_type: str = "image/jpeg"
+) -> Optional[str]:
+    """Upload image to S3 and return the public URL."""
+    try:
+        s3_client = _get_s3_client()
+        if s3_client is None:
+            return None
+
+        bucket = settings.WORKER_CONVERSION_S3_BUCKET_NAME
+
+        # Upload using the original object_name (S3 supports UTF-8)
+        s3_client.upload_fileobj(
+            io.BytesIO(image_data),
+            bucket,
+            object_name,
+            ExtraArgs={"ContentType": content_type},
+        )
+
+        # Construct public URL with proper URL encoding for Chinese characters
+        # Split path and encode each segment to handle Chinese characters
+        endpoint = settings.WORKER_CONVERSION_S3_ENDPOINT.rstrip("/")
+
+        # URL encode the path segments for Chinese character support
+        # e.g., "我的知识库/文档名/images/xxx.jpg" -> "%E6%88%91%E7%9A%84%E7%9F%A5%E8%AF%86%E5%BA%93/%E6%96%87%E6%A1%A3%E5%90%8D/images/xxx.jpg"
+        path_parts = object_name.split("/")
+        encoded_parts = [quote(part, safe="") for part in path_parts]
+        encoded_path = "/".join(encoded_parts)
+
+        public_url = f"{endpoint}/{bucket}/{encoded_path}"
+
+        logger.info(f"[S3] Uploaded image: {object_name} -> {public_url}")
+        return public_url
+
+    except Exception as e:
+        logger.error(f"[S3] Failed to upload image {object_name}: {e}")
+        return None
+
+
+def _extract_markdown_from_zip(
+    zip_content: bytes, base_dir_name: Optional[str] = None
+) -> Tuple[bytes, list]:
     """
     Extract markdown content from MinerU result ZIP.
 
     Args:
         zip_content: ZIP file binary content
+        base_dir_name: Base directory name for S3 upload (derived from original filename)
 
     Returns:
-        Markdown content as UTF-8 encoded bytes
+        Tuple of (markdown content as UTF-8 encoded bytes, uploaded_image_urls list)
     """
+    uploaded_images: list = []
+
     try:
         with zipfile.ZipFile(io.BytesIO(zip_content)) as z:
             # Find markdown files in the ZIP
@@ -204,8 +290,169 @@ def _extract_markdown_from_zip(zip_content: bytes) -> bytes:
             md_file = md_files[0]
             logger.info(f"[MinerU] Extracting markdown: {md_file}")
 
-            content = z.read(md_file)
-            return content
+            content = z.read(md_file).decode("utf-8")
+
+            # If S3 is enabled, upload images and replace references
+            if settings.WORKER_CONVERSION_S3_ENABLED and base_dir_name:
+                # Find all image files in the ZIP for logging/debugging
+                all_image_files = [
+                    f
+                    for f in z.namelist()
+                    if f.lower().endswith(
+                        (
+                            ".png",
+                            ".jpg",
+                            ".jpeg",
+                            ".gif",
+                            ".webp",
+                            ".svg",
+                            ".bmp",
+                            ".tiff",
+                        )
+                    )
+                ]
+                logger.info(
+                    f"[S3] Found {len(all_image_files)} images in ZIP: {all_image_files}"
+                )
+
+                def process_image_upload(
+                    zf: zipfile.ZipFile,
+                    img_path: str,
+                    alt_text: str,
+                    base_dir: str,
+                    original_ref: Optional[str],
+                ) -> str:
+                    """Helper to process single image upload."""
+                    # Try to find the image in ZIP with various path strategies
+                    possible_paths = [img_path]
+
+                    # Strategy 1: Try with ./ prefix
+                    possible_paths.append(f"./{img_path}")
+
+                    # Strategy 2: Try just the filename (flat structure)
+                    flat_name = os.path.basename(img_path)
+                    possible_paths.append(flat_name)
+
+                    # Strategy 3: Try common MinerU directory prefixes
+                    # MinerU often puts images in document/ocr/images/ or similar
+                    if not img_path.startswith("document/"):
+                        possible_paths.append(f"document/{img_path}")
+                        possible_paths.append(f"document/ocr/{img_path}")
+                        possible_paths.append(f"./document/{img_path}")
+                        possible_paths.append(f"./document/ocr/{img_path}")
+
+                    # Strategy 4: Search for partial path match
+                    # If img_path is "images/xxx.jpg", find any path ending with it
+                    if "/" in img_path:
+                        path_suffix = img_path
+                        flat_name_only = os.path.basename(img_path)
+                        for zip_path in zf.namelist():
+                            if zip_path.endswith(path_suffix) or zip_path.endswith(
+                                flat_name_only
+                            ):
+                                if zip_path not in possible_paths:
+                                    possible_paths.append(zip_path)
+
+                    # Remove duplicates while preserving order
+                    seen = set()
+                    unique_paths = []
+                    for p in possible_paths:
+                        if p not in seen:
+                            seen.add(p)
+                            unique_paths.append(p)
+                    possible_paths = unique_paths
+
+                    logger.debug(
+                        f"[S3] Trying paths for {img_path}: {possible_paths[:5]}..."
+                    )  # Log first 5
+
+                    for try_path in possible_paths:
+                        if try_path in zf.namelist():
+                            try:
+                                img_data = zf.read(try_path)
+
+                                ext = os.path.splitext(try_path)[1].lower()
+                                content_type_map = {
+                                    ".png": "image/png",
+                                    ".jpg": "image/jpeg",
+                                    ".jpeg": "image/jpeg",
+                                    ".gif": "image/gif",
+                                    ".webp": "image/webp",
+                                    ".svg": "image/svg+xml",
+                                    ".bmp": "image/bmp",
+                                    ".tiff": "image/tiff",
+                                    ".tif": "image/tiff",
+                                }
+                                content_type = content_type_map.get(ext, "image/jpeg")
+
+                                # For S3 object name, use relative path from ZIP root or just the basename
+                                # Prefer to preserve directory structure if it exists
+                                s3_object_name = f"{base_dir}/{try_path}"
+                                s3_url = _upload_image_to_s3(
+                                    img_data, s3_object_name, content_type
+                                )
+
+                                if s3_url:
+                                    uploaded_images.append((try_path, s3_url))
+                                    return (
+                                        f"![{alt_text}]({s3_url})"
+                                        if alt_text
+                                        else s3_url
+                                    )
+
+                            except Exception as e:
+                                logger.warning(
+                                    f"[S3] Failed to process image {try_path}: {e}"
+                                )
+                                continue
+
+                    logger.warning(f"[S3] Image not found or upload failed: {img_path}")
+                    return original_ref if original_ref else img_path
+
+                # Process markdown image references: ![alt](path)
+                md_img_pattern = r"!\[([^\]]*)\]\(([^)]+)\)"
+
+                def replace_md_image_ref(match):
+                    alt_text = match.group(1)
+                    img_path = match.group(2)
+
+                    if img_path.startswith(("http://", "https://")):
+                        return match.group(0)
+
+                    img_path = img_path.lstrip("./").lstrip("/")
+                    return process_image_upload(
+                        z, img_path, alt_text, base_dir_name, match.group(0)
+                    )
+
+                content = re.sub(md_img_pattern, replace_md_image_ref, content)
+
+                # Process HTML img tags: <img src="path" ...>
+                html_img_pattern = r'<img[^>]+src=["\']([^"\']+)["\'][^>]*>'
+
+                def replace_html_image_ref(match):
+                    img_path = match.group(1)
+
+                    if img_path.startswith(("http://", "https://")):
+                        return match.group(0)
+
+                    img_path = img_path.lstrip("./").lstrip("/")
+                    s3_url = process_image_upload(z, img_path, "", base_dir_name, None)
+                    if s3_url and s3_url != match.group(0):
+                        return match.group(0).replace(match.group(1), s3_url)
+                    return match.group(0)
+
+                content = re.sub(
+                    html_img_pattern,
+                    replace_html_image_ref,
+                    content,
+                    flags=re.IGNORECASE,
+                )
+
+                logger.info(
+                    f"[S3] Uploaded {len(uploaded_images)} images for document: {base_dir_name}"
+                )
+
+            return content.encode("utf-8"), uploaded_images
 
     except zipfile.BadZipFile:
         raise RuntimeError("Invalid ZIP file from MinerU result")
@@ -217,12 +464,17 @@ def _extract_markdown_from_zip(zip_content: bytes) -> bytes:
     queue=settings.KNOWLEDGE_CONVERSION_QUEUE,
     max_retries=settings.KNOWLEDGE_CONVERSION_LOCK_MAX_RETRIES,
     default_retry_delay=CONVERSION_RETRY_DELAY,
+    # Conversion with S3 image upload can take longer than default timeout
+    # Set longer limits: 30 minutes soft, 35 minutes hard
+    soft_time_limit=9000,
+    time_limit=10000,
 )
 def convert_document_task(
     self,
     document_id: int,
     attachment_id: int,
     knowledge_base_id: str,
+    knowledge_base_name: str,
     index_generation: int,
     user_id: int,
     user_name: str,
@@ -349,14 +601,22 @@ def convert_document_task(
                 f"attachment_id={attachment_id}, size={len(binary_data)} bytes"
             )
 
-            # Convert to Markdown
-            markdown_bytes = _convert_to_markdown(binary_data, file_extension)
+            # Generate S3 path: {knowledge_base_name}/{filename_without_ext}
+            # S3 object path format: {knowledge_base_name}/{filename}/images/xxx.jpg
+            filename_without_ext = os.path.splitext(original_filename)[0]
+            s3_base_path = f"{knowledge_base_name}/{filename_without_ext}"
+
+            # Convert to Markdown (with optional S3 image upload)
+            markdown_bytes, uploaded_images = _convert_to_markdown(
+                binary_data, file_extension, s3_base_path
+            )
 
             logger.info(
                 f"[Conversion] Conversion completed: "
                 f"document_id={document_id}, "
                 f"original_size={len(binary_data)}, "
-                f"markdown_size={len(markdown_bytes)}"
+                f"markdown_size={len(markdown_bytes)}, "
+                f"images_uploaded={len(uploaded_images)}"
             )
 
             # Overwrite attachment with Markdown content

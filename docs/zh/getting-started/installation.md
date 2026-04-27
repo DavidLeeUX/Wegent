@@ -117,6 +117,15 @@ EXECUTOR_WORKSPACE=/path/to/workspace
 KNOWLEDGE_CONVERSION_ENABLED=false
 KNOWLEDGE_CONVERSION_FILE_TYPES=pdf,docx,pptx,xlsx
 MINERU_API_BASE_URL=http://mineru-service:8367
+
+# 文档转换 S3 图片存储配置（可选）
+# 启用后将转换提取的图片上传到 S3，并替换 Markdown 中的图片引用
+WORKER_CONVERSION_S3_ENABLED=false
+WORKER_CONVERSION_S3_ENDPOINT=http://minio:9000
+WORKER_CONVERSION_S3_ACCESS_KEY=your_access_key
+WORKER_CONVERSION_S3_SECRET_KEY=your_secret_key
+WORKER_CONVERSION_S3_BUCKET_NAME=img
+WORKER_CONVERSION_S3_REGION_NAME=us-east-1
 ```
 
 ### 步骤 3: 启动服务
