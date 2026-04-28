@@ -1633,7 +1633,8 @@ class KnowledgeOrchestrator:
             raise RuntimeError(message)
 
         try:
-            if settings.needs_conversion(document.file_extension or ""):
+            normalized_extension = _normalize_file_extension(document.file_extension)
+            if settings.needs_conversion(normalized_extension):
                 # File type requires conversion before indexing
                 # Retrieve original filename from attachment record
                 from app.models.subtask_context import ContextType, SubtaskContext
@@ -1659,7 +1660,7 @@ class KnowledgeOrchestrator:
                     index_generation=generation,
                     user_id=index_owner_user_id,
                     user_name=user.user_name,
-                    file_extension=document.file_extension or "",
+                    file_extension=normalized_extension,
                     original_filename=original_filename,
                     retriever_name=retriever_name,
                     retriever_namespace=retriever_namespace,

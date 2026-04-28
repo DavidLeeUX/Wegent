@@ -288,7 +288,9 @@ export function DocumentItem({
                     </TooltipTrigger>
                     <TooltipContent side="top" className="max-w-xs">
                       <p className="text-xs">
-                        {t('knowledge:document.document.indexStatus.indexingHint')}
+                        {isConverting
+                          ? t('knowledge:document.document.indexStatus.convertingHint')
+                          : t('knowledge:document.document.indexStatus.indexingHint')}
                       </p>
                     </TooltipContent>
                   </Tooltip>

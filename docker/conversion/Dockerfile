@@ -32,7 +32,7 @@ RUN if [ ! -f .env ]; then cp .env.example .env; fi
 # Log level: info (production), debug (verbose troubleshooting)
 
 ENV CELERY_QUEUE=knowledge_conversion
-ENV CELERY_CONCURRENCY=10
+ENV CELERY_CONCURRENCY=2
 ENV CELERY_LOGLEVEL=info
 ENV CELERY_HOSTNAME=conversion-worker@%h
 

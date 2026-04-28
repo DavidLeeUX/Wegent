@@ -464,8 +464,8 @@ def _extract_markdown_from_zip(
     queue=settings.KNOWLEDGE_CONVERSION_QUEUE,
     max_retries=settings.KNOWLEDGE_CONVERSION_LOCK_MAX_RETRIES,
     default_retry_delay=CONVERSION_RETRY_DELAY,
-    # Conversion with S3 image upload can take longer than default timeout
-    # Set longer limits: 30 minutes soft, 35 minutes hard
+    # Conversion with S3 image upload can take much longer than default timeout
+    # Set longer limits: 150 minutes soft, ~167 minutes hard
     soft_time_limit=9000,
     time_limit=10000,
 )
